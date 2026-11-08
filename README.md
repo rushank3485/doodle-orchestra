@@ -2,7 +2,7 @@
 
 Draw on a canvas and a sweeping playhead turns your doodle into music.
 
-**Live demo:** _add your GitHub Pages link here_
+**Live demo:** [https://doodle-orchestra.vercel.app](https://doodle-orchestra.vercel.app)
 
 ## How it works
 - **Height** sets the pitch (snapped to a scale so it always sounds good)
