@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doodle Orchestra</title>
+<style>
+:root{--bg:#f4f1ea;--panel:#fffdf8;--ink:#23201b;--mute:#7a7266;--line:#ddd5c6;--canvas:#fffdf8;--grid:#00000012;--head:#23201b;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12111a;--panel:#1c1b27;--ink:#f1eefc;--mute:#8d89a6;--line:#2e2c40;--canvas:#171622;--grid:#ffffff10;--head:#f1eefc}}
+:root[data-theme="dark"]{--bg:#12111a;--panel:#1c1b27;--ink:#f1eefc;--mute:#8d89a6;--line:#2e2c40;--canvas:#171622;--grid:#ffffff10;--head:#f1eefc}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column;gap:10px;padding:12px}
+header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+h1{font-size:1.25rem;margin:0}
+header p{margin:0;color:var(--mute);font-size:.85rem}
+#stage{flex:1;min-height:240px;position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--canvas)}
+canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+#hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mute);pointer-events:none;font-size:1rem;text-align:center;padding:20px;transition:opacity .4s}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px 10px}
+button,select{font:inherit;font-size:.85rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:7px 11px;cursor:pointer}
+button:hover{border-color:var(--mute)}
+.inst{display:flex;align-items:center;gap:6px}
+.inst.on{border-color:var(--c);box-shadow:0 0 0 2px var(--c)}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--c)}
+label{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--mute)}
+input[type=range]{width:90px}
+.sp{flex:1}
+</style>
+</head>
+<body>
+<header><h1>🎶 Doodle Orchestra</h1><p>Draw anything. The playhead turns your doodle into music.</p></header>
+<div id="stage"><canvas id="cv"></canvas><div id="hint">Draw here ✏️<br>Height = pitch · Color = instrument · Size = volume</div></div>
+<div class="bar" id="insts"></div>
+<div class="bar">
+<button id="play">⏸ Pause</button>
+<button id="undo">↶ Undo</button>
+<button id="clear">Clear</button>
+<button id="rand">✨ Surprise me</button>
+<span class="sp"></span>
+<label>Scale <select id="scale"><option value="pent">Pentatonic</option><option value="major">Major</option><option value="minor">Minor</option><option value="chrom">Chromatic</option></select></label>
+<label>Tempo <input type="range" id="tempo" min="50" max="180" value="100"></label>
+<label>Size <input type="range" id="size" min="4" max="26" value="12"></label>
+</div>
+<script>
+(function(){
+const INST={bell:'#2dd4bf',bass:'#fb7185',pluck:'#f59e0b',drum:'#a78bfa'};
+const SCALES={pent:[0,2,4,7,9],major:[0,2,4,5,7,9,11],minor:[0,2,3,5,7,8,10],chrom:[0,1,2,3,4,5,6,7,8,9,10,11]};
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d'),hint=document.getElementById('hint');
+let W=0,H=0,strokes=[],cur='bell',playing=true,start=performance.now(),prev=0,drawing=null,AC=null,master=null;
+const $=id=>document.getElementById(id);
+
+function resize(){const r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;W=r.width;H=r.height;cv.width=W*d;cv.height=H*d;ctx.setTransform(d,0,0,d,0,0)}
+window.addEventListener('resize',resize);resize();
+
+const ib=$('insts');
+Object.keys(INST).forEach(k=>{const b=document.createElement('button');b.className='inst'+(k===cur?' on':'');b.style.setProperty('--c',INST[k]);b.innerHTML='<span class="dot"></span>'+k[0].toUpperCase()+k.slice(1);b.onclick=()=>{cur=k;[...ib.children].forEach(c=>c.classList.remove('on'));b.classList.add('on')};ib.appendChild(b)});
+
+function audio(){if(AC)return;AC=new (window.AudioContext||window.webkitAudioContext)();const c=AC.createDynamicsCompressor();master=AC.createGain();master.gain.value=.7;master.connect(c);c.connect(AC.destination)}
+function midi(y,inst){const s=SCALES[$('scale').value],total=s.length*3,i=Math.max(0,Math.min(total-1,Math.floor((1-y)*total)));let m=48+Math.floor(i/s.length)*12+s[i%s.length];if(inst==='bell')m+=12;if(inst==='bass')m-=12;return m}
+function env(g,t,peak,dec){g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(peak,t+.008);g.gain.exponentialRampToValueAtTime(.0001,t+dec)}
+function noise(t,dur,f,type,peak){const n=AC.sampleRate*dur,b=AC.createBuffer(1,n,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<n;i++)d[i]=Math.random()*2-1;const s=AC.createBufferSource();s.buffer=b;const fl=AC.createBiquadFilter();fl.type=type;fl.frequency.value=f;const g=AC.createGain();env(g,t,peak,dur);s.connect(fl);fl.connect(g);g.connect(master);s.start(t)}
+function play(n){
+ if(!AC)return;const t=AC.currentTime,v=.15+n.size/26*.5;
+ if(n.inst==='drum'){
+  if(n.y>.66){const o=AC.createOscillator(),g=AC.createGain();o.frequency.setValueAtTime(150,t);o.frequency.exponentialRampToValueAtTime(40,t+.15);env(g,t,v*1.4,.25);o.connect(g);g.connect(master);o.start(t);o.stop(t+.3)}
+  else if(n.y>.33)noise(t,.18,1800,'bandpass',v);
+  else noise(t,.06,7000,'highpass',v*.7);
+  return}
+ const f=440*Math.pow(2,(midi(n.y,n.inst)-69)/12),o=AC.createOscillator(),g=AC.createGain();
+ if(n.inst==='bell'){o.type='sine';env(g,t,v,1.2);const o2=AC.createOscillator(),g2=AC.createGain();o2.type='sine';o2.frequency.value=f*2.76;g2.gain.value=.25;o2.connect(g2);g2.connect(g);o2.start(t);o2.stop(t+1.2)}
+ else if(n.inst==='bass'){o.type='triangle';env(g,t,v*1.3,.6)}
+ else{o.type='sawtooth';const fl=AC.createBiquadFilter();fl.type='lowpass';fl.frequency.setValueAtTime(3000,t);fl.frequency.exponentialRampToValueAtTime(300,t+.25);env(g,t,v*.6,.3);o.connect(fl);fl.connect(g)}
+ o.frequency.value=f;if(n.inst!=='pluck')o.connect(g);g.connect(master);o.start(t);o.stop(t+1.3)}
+
+function pos(e){const r=cv.getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
+function addNote(p){const n={x:p.x,y:p.y,inst:cur,size:+$('size').value,pulse:0};drawing.push(n);return n}
+cv.addEventListener('pointerdown',e=>{audio();if(AC.state==='suspended')AC.resume();cv.setPointerCapture(e.pointerId);drawing=[];strokes.push(drawing);addNote(pos(e));hint.style.opacity=0});
+cv.addEventListener('pointermove',e=>{if(!drawing)return;const p=pos(e),l=drawing[drawing.length-1];if(Math.hypot((p.x-l.x)*W,(p.y-l.y)*H)>=18)addNote(p)});
+['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,()=>{drawing=null}));
+
+$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';if(playing)start=performance.now()-prev*loopMs()};
+$('undo').onclick=()=>{strokes.pop();if(!strokes.length)hint.style.opacity=1};
+$('clear').onclick=()=>{strokes=[];hint.style.opacity=1};
+$('rand').onclick=()=>{audio();if(AC.state==='suspended')AC.resume();strokes=[];hint.style.opacity=0;const ks=Object.keys(INST);
+ for(let s=0;s<4;s++){const inst=ks[s%4],a=Math.random()*.3+.15,f=Math.random()*3+1,ph=Math.random()*6,mid=inst==='bass'||inst==='drum'?.7:.35,st=[];
+  const cnt=inst==='drum'?8:inst==='bass'?6:16;
+  for(let i=0;i<cnt;i++){const x=.04+i/cnt*.92;st.push({x,y:inst==='drum'?[.8,.5,.15,.5][i%4]:Math.max(.05,Math.min(.95,mid+Math.sin(x*f*6+ph)*a)),inst,size:8+Math.random()*12,pulse:0})}
+  strokes.push(st)}};
+function loopMs(){return 8*60000/+$('tempo').value}
+
+function frame(now){
+ const d=loopMs();let p=prev;
+ if(playing){p=((now-start)%d)/d;const hit=n=>{n.pulse=1;play(n)};
+  for(const s of strokes)for(const n of s){if(p>=prev?(n.x>prev&&n.x<=p):(n.x>prev||n.x<=p))hit(n)}
+  prev=p}
+ ctx.clearRect(0,0,W,H);
+ const cs=getComputedStyle(document.documentElement);
+ ctx.strokeStyle=cs.getPropertyValue('--grid');ctx.lineWidth=1;
+ for(let i=1;i<8;i++){ctx.beginPath();ctx.moveTo(i/8*W,0);ctx.lineTo(i/8*W,H);ctx.stroke()}
+ for(const s of strokes){
+  ctx.strokeStyle=INST[s[0].inst];ctx.globalAlpha=.35;ctx.lineWidth=2;ctx.beginPath();s.forEach((n,i)=>i?ctx.lineTo(n.x*W,n.y*H):ctx.moveTo(n.x*W,n.y*H));ctx.stroke();
+  ctx.globalAlpha=1;
+  for(const n of s){n.pulse*=.92;ctx.fillStyle=INST[n.inst];ctx.beginPath();ctx.arc(n.x*W,n.y*H,n.size/2+n.pulse*8,0,6.283);ctx.fill();
+   if(n.pulse>.05){ctx.globalAlpha=n.pulse*.4;ctx.beginPath();ctx.arc(n.x*W,n.y*H,n.size/2+n.pulse*22,0,6.283);ctx.fill();ctx.globalAlpha=1}}}
+ const hx=prev*W;ctx.strokeStyle=cs.getPropertyValue('--head');ctx.globalAlpha=.7;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(hx,0);ctx.lineTo(hx,H);ctx.stroke();ctx.globalAlpha=1;
+ requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
